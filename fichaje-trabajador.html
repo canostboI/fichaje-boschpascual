@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0a0a0a">
+    <title>Fichaje - Bosch Pascual</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        :root {
+            --bg: #0a0a0a; --surface: #131313; --border: rgba(255,255,255,0.08);
+            --primary: #1a6b6b; --primary-light: #238787;
+            --text: #fff; --text-secondary: #a0a0a0;
+            --success: #22c55e; --danger: #e63946; --warning: #f59e0b;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+        .container { max-width: 440px; margin: 0 auto; padding: 12px 16px; flex: 1; display: flex; flex-direction: column; }
+
+        .lang-selector { position: absolute; top: 12px; right: 12px; display: flex; gap: 6px; }
+        .lang-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text-secondary); padding: 6px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+        .lang-btn.active { background: var(--primary); border-color: var(--primary); color: white; }
+
+        .header { text-align: center; padding: 10px 0; }
+        .logo { font-family: 'Bebas Neue', sans-serif; font-size: 28px; letter-spacing: 3px; color: var(--primary); }
+        .obra-name { font-size: 13px; color: var(--text-secondary); margin-top: 4px; padding: 6px 14px; background: var(--surface); border-radius: 20px; display: inline-block; }
+
+        .clock-container { text-align: center; padding: 10px 0; }
+        .clock { font-family: 'DM Mono', monospace; font-size: 44px; font-weight: 500; background: linear-gradient(135deg, var(--primary), var(--primary-light)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .date { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
+
+        .status-card { background: var(--surface); border-radius: 16px; padding: 20px; margin: auto; border: 1px solid var(--border); text-align: center; width: 100%; }
+        .status-card.success { border-color: var(--success); background: rgba(34,197,94,0.1); }
+        .status-card.danger { border-color: var(--danger); background: rgba(230,57,70,0.1); }
+        .status-icon { width: 50px; height: 50px; border-radius: 12px; display: flex; align-items: center; justify-content: center; margin: 0 auto 12px; }
+        .status-icon.success { background: var(--success); }
+        .status-icon.danger { background: var(--danger); }
+        .status-icon svg { width: 26px; height: 26px; color: white; }
+        .status-title { font-family: 'Bebas Neue', sans-serif; font-size: 22px; letter-spacing: 1px; margin-bottom: 6px; }
+        .status-message { font-size: 13px; color: var(--text-secondary); line-height: 1.4; }
+
+        .gps-status { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px; background: var(--surface); border-radius: 8px; margin-bottom: 10px; font-size: 12px; }
+        .gps-status.loading { color: var(--warning); }
+        .gps-status.success { color: var(--success); }
+        .gps-status.error { color: var(--danger); }
+        .gps-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+        .gps-status.loading .gps-dot { animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
+
+        .worker-card { background: var(--surface); border-radius: 12px; padding: 12px; margin-bottom: 12px; border: 1px solid var(--border); }
+        .worker-info { display: flex; align-items: center; gap: 12px; }
+        .worker-avatar { width: 44px; height: 44px; background: linear-gradient(135deg, var(--primary), var(--primary-light)); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-family: 'Bebas Neue', sans-serif; font-size: 18px; color: white; }
+        .worker-details { flex: 1; }
+        .worker-name { font-weight: 600; font-size: 15px; }
+        .worker-dni { font-size: 12px; color: var(--text-secondary); }
+        .worker-empresa { font-size: 11px; color: #666; margin-top: 1px; }
+        .btn-change { background: var(--surface); border: 1px solid var(--border); color: var(--text-secondary); padding: 6px 12px; border-radius: 6px; font-size: 11px; cursor: pointer; }
+
+        .form-group { margin-bottom: 16px; }
+        .form-label { display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+        .form-input { width: 100%; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; color: var(--text); font-size: 18px; text-transform: uppercase; text-align: center; letter-spacing: 2px; }
+        .form-input:focus { outline: none; border-color: var(--primary); }
+
+        .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 10px 0; }
+        .btn { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 20px 24px; border-radius: 14px; font-family: 'Bebas Neue', sans-serif; font-size: 24px; letter-spacing: 2px; cursor: pointer; border: none; transition: all 0.2s; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-entrada { background: linear-gradient(135deg, var(--success), #16a34a); color: white; }
+        .btn-salida { background: linear-gradient(135deg, var(--danger), #c62828); color: white; }
+        .btn-primary { background: linear-gradient(135deg, var(--primary), var(--primary-light)); color: white; grid-column: span 2; }
+        .btn svg { width: 28px; height: 28px; }
+
+        .screen { display: none; flex-direction: column; flex: 1; }
+        .screen.active { display: flex; }
+
+        .confirmation-time { font-family: 'DM Mono', monospace; font-size: 44px; text-align: center; margin: 10px 0; }
+        .confirmation-time.entrada { color: var(--success); }
+        .confirmation-time.salida { color: var(--danger); }
+        .late-badge { display: inline-flex; align-items: center; gap: 6px; background: var(--warning); color: #000; padding: 5px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; margin-top: 8px; }
+
+        .loading { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; }
+        .spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 16px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="lang-selector">
+        <button class="lang-btn active" data-lang="es">ES</button>
+        <button class="lang-btn" data-lang="ar">عربي</button>
+    </div>
+
+    <div class="container">
+        <!-- Loading -->
+        <div class="screen active" id="screenLoading">
+            <div class="loading">
+                <div class="spinner"></div>
+                <p style="color:var(--text-secondary);">Cargando...</p>
+            </div>
+        </div>
+
+        <!-- No obra -->
+        <div class="screen" id="screenNoObra">
+            <div class="header"><div class="logo">BOSCH PASCUAL</div></div>
+            <div style="padding-top:40px;">
+                <div class="status-card danger">
+                    <div class="status-icon danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg></div>
+                    <div class="status-title">ERROR</div>
+                    <div class="status-message" id="msgScanQR">Escanea el código QR de la obra para fichar</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- GPS Error -->
+        <div class="screen" id="screenGPSError">
+            <div class="header"><div class="logo">BOSCH PASCUAL</div><div class="obra-name" id="gpsObraName">-</div></div>
+            <div style="padding-top:40px;">
+                <div class="status-card danger">
+                    <div class="status-icon danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg></div>
+                    <div class="status-title" id="msgGPSErrorTitle">FUERA DE ZONA</div>
+                    <div class="status-message" id="msgGPSError">Debes estar en la obra para poder fichar</div>
+                </div>
+            </div>
+            <button class="btn btn-primary" style="margin-top:20px;" onclick="location.reload()">REINTENTAR</button>
+        </div>
+
+        <!-- No registrado -->
+        <div class="screen" id="screenNoRegistrado">
+            <div class="header"><div class="logo">BOSCH PASCUAL</div><div class="obra-name" id="noRegObraName">-</div></div>
+            <div style="padding-top:40px;">
+                <div class="status-card danger">
+                    <div class="status-icon danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="18" y1="8" x2="23" y2="13"/><line x1="23" y1="8" x2="18" y2="13"/></svg></div>
+                    <div class="status-title" id="msgNoRegTitle">NO REGISTRADO</div>
+                    <div class="status-message" id="msgNoReg">Tu DNI no está en el sistema. Contacta con tu encargado.</div>
+                </div>
+            </div>
+            <button class="btn btn-primary" style="margin-top:20px;" onclick="mostrarIdentificacion()">INTENTAR OTRO DNI</button>
+        </div>
+
+        <!-- No validado en esta obra -->
+        <div class="screen" id="screenNoValidado">
+            <div class="header"><div class="logo">BOSCH PASCUAL</div><div class="obra-name" id="noValObraName">-</div></div>
+            <div style="padding-top:40px;">
+                <div class="status-card danger">
+                    <div class="status-icon danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+                    <div class="status-title" id="msgNoValTitle">NO AUTORIZADO EN ESTA OBRA</div>
+                    <div class="status-message" id="msgNoVal">Tu documentación no está validada para esta obra. Contacta con tu encargado.</div>
+                </div>
+            </div>
+            <button class="btn btn-primary" style="margin-top:20px;" onclick="mostrarIdentificacion()">INTENTAR OTRO DNI</button>
+        </div>
+
+        <!-- Identificación -->
+        <div class="screen" id="screenIdentificacion">
+            <div class="header"><div class="logo">BOSCH PASCUAL</div><div class="obra-name" id="idObraName">-</div></div>
+            <div class="clock-container">
+                <div class="clock" id="idClock">--:--</div>
+                <div class="date" id="idDate">--</div>
+            </div>
+            <div class="gps-status loading" id="idGpsStatus"><span class="gps-dot"></span><span>Obteniendo ubicación...</span></div>
+            <div>
+                <div class="form-group">
+                    <label class="form-label" id="lblDNI">Introduce tu DNI/NIE</label>
+                    <input type="text" class="form-input" id="inputDNI" placeholder="12345678A" autocomplete="off">
+                </div>
+            </div>
+            <button class="btn btn-primary" style="margin-top:20px;" id="btnIdentificar" onclick="identificarTrabajador()" disabled>CONTINUAR</button>
+        </div>
+
+        <!-- Fichaje -->
+        <div class="screen" id="screenFichaje">
+            <div class="header"><div class="logo">BOSCH PASCUAL</div><div class="obra-name" id="fichObraName">-</div></div>
+            <div class="clock-container">
+                <div class="clock" id="fichClock">--:--</div>
+                <div class="date" id="fichDate">--</div>
+            </div>
+            <div class="gps-status success" id="fichGpsStatus"><span class="gps-dot"></span><span>Ubicación verificada</span></div>
+            <div class="worker-card">
+                <div class="worker-info">
+                    <div class="worker-avatar" id="workerAvatar">--</div>
+                    <div class="worker-details">
+                        <div class="worker-name" id="workerName">-</div>
+                        <div class="worker-dni" id="workerDNI">-</div>
+                        <div class="worker-empresa" id="workerEmpresa">-</div>
+                    </div>
+                    <button class="btn-change" onclick="mostrarIdentificacion()">Cambiar</button>
+                </div>
+            </div>
+            <div class="btn-group">
+                <button class="btn btn-entrada" id="btnEntrada" onclick="fichar('entrada')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+                    ENTRADA
+                </button>
+                <button class="btn btn-salida" id="btnSalida" onclick="fichar('salida')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                    SALIDA
+                </button>
+            </div>
+        </div>
+
+        <!-- Confirmación -->
+        <div class="screen" id="screenConfirmacion">
+            <div class="header"><div class="logo">BOSCH PASCUAL</div><div class="obra-name" id="confObraName">-</div></div>
+            <div style="padding-top:40px;">
+                <div class="status-card success" id="confCard">
+                    <div class="status-icon success" id="confIcon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg></div>
+                    <div class="status-title" id="confTitle">ENTRADA REGISTRADA</div>
+                    <div class="confirmation-time entrada" id="confTime">08:00</div>
+                    <div class="status-message" id="confMessage">¡Buen día de trabajo!</div>
+                    <div class="late-badge" id="lateBadge" style="display:none;">⏰ Llegada tardía</div>
+                </div>
+            </div>
+            <button class="btn btn-primary" style="margin-top:20px;" onclick="mostrarIdentificacion()">HECHO</button>
+        </div>
+    </div>
+
+    <script>
+        const SUPABASE_URL = 'https://istrnsicleopzbsrapsw.supabase.co';
+        const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlzdHJuc2ljbGVvcHpic3JhcHN3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4MTIxMTYsImV4cCI6MjA5MTM4ODExNn0.5UXV2LWPXmbfLI7rKpZSG9YBzZsesjckHnhQabA0mTY';
+        const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        let obraId = null, obraData = null, trabajadorData = null, currentPosition = null;
+        const $ = id => document.getElementById(id);
+
+        // Traducciones
+        const i18n = {
+            es: { scanQR: 'Escanea el código QR de la obra para fichar', gpsError: 'Debes estar en la obra para poder fichar', gpsErrorTitle: 'FUERA DE ZONA', noReg: 'Tu DNI no está en el sistema. Contacta con tu encargado.', noRegTitle: 'NO REGISTRADO', noVal: 'Tu documentación no está validada para esta obra. Contacta con tu encargado.', noValTitle: 'NO AUTORIZADO EN ESTA OBRA', enterDNI: 'Introduce tu DNI/NIE', gpsLoading: 'Obteniendo ubicación...', gpsOk: 'Ubicación verificada', entryOk: 'ENTRADA REGISTRADA', exitOk: 'SALIDA REGISTRADA', goodDay: '¡Buen día de trabajo!', seeYou: '¡Hasta mañana!', late: '⏰ Llegada tardía' },
+            ar: { scanQR: 'امسح رمز QR للموقع للتسجيل', gpsError: 'يجب أن تكون في الموقع للتسجيل', gpsErrorTitle: 'خارج المنطقة', noReg: 'رقم هويتك غير مسجل. تواصل مع المشرف.', noRegTitle: 'غير مسجل', noVal: 'وثائقك غير مصادق عليها لهذا الموقع. تواصل مع المشرف.', noValTitle: 'غير مصرح في هذا الموقع', enterDNI: 'أدخل رقم هويتك', gpsLoading: 'جاري تحديد الموقع...', gpsOk: 'تم التحقق من الموقع', entryOk: 'تم تسجيل الدخول', exitOk: 'تم تسجيل الخروج', goodDay: 'يوم عمل سعيد!', seeYou: 'إلى اللقاء!', late: '⏰ وصول متأخر' }
+        };
+        let lang = 'es';
+
+        function setLang(l) {
+            lang = l;
+            document.querySelectorAll('.lang-btn').forEach(b => b.classList.toggle('active', b.dataset.lang === l));
+            $('msgScanQR').textContent = i18n[l].scanQR;
+            $('msgGPSError').textContent = i18n[l].gpsError;
+            $('msgGPSErrorTitle').textContent = i18n[l].gpsErrorTitle;
+            $('msgNoReg').textContent = i18n[l].noReg;
+            $('msgNoRegTitle').textContent = i18n[l].noRegTitle;
+            $('msgNoVal').textContent = i18n[l].noVal;
+            $('msgNoValTitle').textContent = i18n[l].noValTitle;
+            $('lblDNI').textContent = i18n[l].enterDNI;
+            document.documentElement.dir = l === 'ar' ? 'rtl' : 'ltr';
+        }
+
+        document.querySelectorAll('.lang-btn').forEach(b => b.addEventListener('click', () => setLang(b.dataset.lang)));
+
+        function showScreen(id) {
+            document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+            $(id).classList.add('active');
+        }
+
+        function updateClock() {
+            const now = new Date();
+            const time = now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+            const date = now.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+            ['idClock', 'fichClock'].forEach(id => { if ($(id)) $(id).textContent = time; });
+            ['idDate', 'fichDate'].forEach(id => { if ($(id)) $(id).textContent = date.charAt(0).toUpperCase() + date.slice(1); });
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        function roundTo5Min(d) {
+            const ms = 1000 * 60 * 5;
+            return new Date(Math.round(d.getTime() / ms) * ms);
+        }
+
+        function getInitials(name) {
+            return name ? name.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase() : '--';
+        }
+
+        function calcDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371e3;
+            const p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180;
+            const dp = (lat2 - lat1) * Math.PI / 180, dl = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        }
+
+        async function getGPS() {
+            return new Promise((resolve, reject) => {
+                if (!navigator.geolocation) return reject('No GPS');
+                navigator.geolocation.getCurrentPosition(
+                    pos => { currentPosition = { lat: pos.coords.latitude, lng: pos.coords.longitude }; resolve(currentPosition); },
+                    err => reject(err),
+                    { enableHighAccuracy: true, timeout: 15000 }
+                );
+            });
+        }
+
+        async function verificarGPS(statusEl) {
+            const el = $(statusEl);
+            
+            // Si la obra no tiene coordenadas, no pedir GPS
+            if (!obraData.latitud || !obraData.longitud) {
+                el.className = 'gps-status success';
+                el.innerHTML = `<span class="gps-dot"></span><span>${i18n[lang].gpsOk}</span>`;
+                return true;
+            }
+            
+            el.className = 'gps-status loading';
+            el.innerHTML = `<span class="gps-dot"></span><span>${i18n[lang].gpsLoading}</span>`;
+            try {
+                await getGPS();
+                const dist = calcDistance(currentPosition.lat, currentPosition.lng, obraData.latitud, obraData.longitud);
+                if (dist <= (obraData.radio_gps || 200)) {
+                    el.className = 'gps-status success';
+                    el.innerHTML = `<span class="gps-dot"></span><span>${i18n[lang].gpsOk}</span>`;
+                    return true;
+                }
+                return false;
+            } catch (e) {
+                el.className = 'gps-status error';
+                el.innerHTML = `<span class="gps-dot"></span><span>Error GPS</span>`;
+                return false;
+            }
+        }
+
+        async function cargarObra() {
+            const params = new URLSearchParams(window.location.search);
+            obraId = params.get('obra');
+            if (!obraId) { showScreen('screenNoObra'); return false; }
+            try {
+                const { data, error } = await db.from('obras').select('*').eq('id', obraId).single();
+                if (error || !data) { showScreen('screenNoObra'); return false; }
+                obraData = data;
+                ['idObraName', 'fichObraName', 'confObraName', 'gpsObraName', 'noRegObraName', 'noValObraName'].forEach(id => { if ($(id)) $(id).textContent = obraData.nombre; });
+                return true;
+            } catch (e) { showScreen('screenNoObra'); return false; }
+        }
+
+        function mostrarIdentificacion() {
+            $('inputDNI').value = '';
+            $('btnIdentificar').disabled = true;
+            trabajadorData = null;
+            showScreen('screenIdentificacion');
+            verificarGPS('idGpsStatus');
+        }
+
+        async function identificarTrabajador() {
+            const dni = $('inputDNI').value.trim().toUpperCase();
+            if (!dni) return;
+
+            const gpsOk = await verificarGPS('idGpsStatus');
+            if (!gpsOk && obraData.latitud && obraData.longitud) {
+                $('gpsObraName').textContent = obraData.nombre;
+                showScreen('screenGPSError');
+                return;
+            }
+
+            try {
+                // Buscar trabajador
+                const { data: trab, error } = await db.from('trabajadores').select('*, empresas(nombre)').eq('dni', dni).single();
+                if (error || !trab) {
+                    // Registrar intento de acceso denegado - DNI no registrado
+                    await db.from('accesos_denegados').insert([{
+                        dni: dni,
+                        obra_id: obraId,
+                        motivo: 'DNI no registrado en el sistema'
+                    }]);
+                    $('noRegObraName').textContent = obraData.nombre;
+                    showScreen('screenNoRegistrado');
+                    return;
+                }
+                
+                // Verificar validación EN ESTA OBRA
+                const { data: validacion } = await db.from('validaciones_obra').select('*').eq('trabajador_id', trab.id).eq('obra_id', obraId).single();
+                
+                // Función para verificar si la validación ha expirado
+                function estaExpirada(fechaValidacion) {
+                    if (!fechaValidacion) return true;
+                    const fecha = new Date(fechaValidacion);
+                    const mes = fecha.getMonth();
+                    const año = fecha.getFullYear();
+                    // Expira el día 10 del mes siguiente
+                    const fechaExpiracion = new Date(mes === 11 ? año + 1 : año, mes === 11 ? 0 : mes + 1, 10, 23, 59, 59);
+                    return new Date() > fechaExpiracion;
+                }
+                
+                if (!validacion || !validacion.validado || estaExpirada(validacion.fecha_validacion)) {
+                    // Registrar intento de acceso denegado - No validado o expirado
+                    let motivo = 'Sin validación para esta obra';
+                    if (validacion && validacion.validado && estaExpirada(validacion.fecha_validacion)) {
+                        motivo = 'Validación expirada';
+                    }
+                    await db.from('accesos_denegados').insert([{
+                        dni: dni,
+                        obra_id: obraId,
+                        motivo: motivo + ' - ' + trab.nombre
+                    }]);
+                    $('noValObraName').textContent = obraData.nombre;
+                    showScreen('screenNoValidado');
+                    return;
+                }
+                
+                trabajadorData = trab;
+                mostrarPantallaFichaje();
+            } catch (e) {
+                console.error(e);
+                showScreen('screenNoRegistrado');
+            }
+        }
+
+        function mostrarPantallaFichaje() {
+            $('workerAvatar').textContent = getInitials(trabajadorData.nombre);
+            $('workerName').textContent = trabajadorData.nombre;
+            $('workerDNI').textContent = trabajadorData.dni;
+            $('workerEmpresa').textContent = trabajadorData.empresas?.nombre || '-';
+            showScreen('screenFichaje');
+        }
+
+        async function fichar(tipo) {
+            const btn = tipo === 'entrada' ? $('btnEntrada') : $('btnSalida');
+            btn.disabled = true;
+
+            const ahora = new Date();
+            const horaRedondeada = roundTo5Min(ahora);
+            const esTarde = tipo === 'entrada' && (ahora.getHours() > 8 || (ahora.getHours() === 8 && ahora.getMinutes() > 0));
+
+            try {
+                await db.from('fichajes').insert([{
+                    trabajador_id: trabajadorData.id,
+                    obra_id: obraId,
+                    tipo,
+                    hora: ahora.toISOString(),
+                    hora_redondeada: horaRedondeada.toISOString(),
+                    latitud: currentPosition?.lat,
+                    longitud: currentPosition?.lng,
+                    es_tarde: esTarde,
+                    fuera_de_zona: false,
+                    cierre_automatico: false
+                }]);
+                mostrarConfirmacion(tipo, horaRedondeada, esTarde);
+            } catch (e) {
+                console.error(e);
+                alert('Error al fichar');
+                btn.disabled = false;
+            }
+        }
+
+        function mostrarConfirmacion(tipo, hora, esTarde) {
+            const card = $('confCard'), icon = $('confIcon'), time = $('confTime');
+            if (tipo === 'entrada') {
+                card.className = 'status-card success';
+                icon.className = 'status-icon success';
+                $('confTitle').textContent = i18n[lang].entryOk;
+                time.className = 'confirmation-time entrada';
+                $('confMessage').textContent = i18n[lang].goodDay;
+                $('lateBadge').style.display = esTarde ? 'inline-flex' : 'none';
+                $('lateBadge').textContent = i18n[lang].late;
+            } else {
+                card.className = 'status-card success';
+                card.style.borderColor = 'var(--danger)';
+                card.style.background = 'rgba(230,57,70,0.1)';
+                icon.className = 'status-icon danger';
+                $('confTitle').textContent = i18n[lang].exitOk;
+                time.className = 'confirmation-time salida';
+                $('confMessage').textContent = i18n[lang].seeYou;
+                $('lateBadge').style.display = 'none';
+            }
+            time.textContent = hora.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+            showScreen('screenConfirmacion');
+        }
+
+        $('inputDNI').addEventListener('input', () => { $('btnIdentificar').disabled = !$('inputDNI').value.trim(); });
+        $('inputDNI').addEventListener('keypress', e => { if (e.key === 'Enter') identificarTrabajador(); });
+
+        async function init() {
+            const obraOk = await cargarObra();
+            if (!obraOk) return;
+            mostrarIdentificacion();
+        }
+
+        init();
+    </script>
+</body>
+</html>
