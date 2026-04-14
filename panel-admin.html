@@ -931,18 +931,42 @@
         }
         function editarEncargado(id) { abrirModalEncargado(encargados.find(e => e.id === id)); }
 
-        async function guardarEncargado() {
+        async async function guardarEncargado() {
             const id = $('encId').value;
-            const data = { nombre: $('encNombre').value.trim(), email: $('encEmail').value.trim().toLowerCase(), password: $('encPassword').value };
-            if (!data.nombre || !data.email || !data.password) { alert('Todos los campos obligatorios'); return; }
+            const data = { 
+                nombre: $('encNombre').value.trim(), 
+                email: $('encEmail').value.trim().toLowerCase(), 
+                password: $('encPassword').value 
+            };
+            if (!data.nombre || !data.email || !data.password) { 
+                alert('Todos los campos son obligatorios'); 
+                return; 
+            }
             let encargadoId = id;
-            if (id) await db.from('encargados').update(data).eq('id', id);
-            else { const { data: nuevo } = await db.from('encargados').insert([data]).select().single(); encargadoId = nuevo.id; }
-            await db.from('obras_encargados').delete().eq('encargado_id', encargadoId);
-            const toggles = document.querySelectorAll('#encObrasAsignadas .mini-toggle.active');
-            const asignaciones = Array.from(toggles).map(t => ({ encargado_id: encargadoId, obra_id: t.dataset.obra }));
-            if (asignaciones.length) await db.from('obras_encargados').insert(asignaciones);
-            cerrarModal('modalEncargado'); await cargarDatosBase(); cargarEncargados();
+            try {
+                if (id) {
+                    const { error } = await db.from('encargados').update(data).eq('id', id);
+                    if (error) { alert('Error al actualizar: ' + error.message); return; }
+                } else {
+                    const { data: nuevo, error } = await db.from('encargados').insert([data]).select().single();
+                    if (error) { alert('Error al crear encargado: ' + error.message); return; }
+                    if (!nuevo) { alert('Error: no se pudo crear el encargado'); return; }
+                    encargadoId = nuevo.id;
+                }
+                await db.from('obras_encargados').delete().eq('encargado_id', encargadoId);
+                const toggles = document.querySelectorAll('#encObrasAsignadas .mini-toggle.active');
+                const asignaciones = Array.from(toggles).map(t => ({ encargado_id: encargadoId, obra_id: t.dataset.obra }));
+                if (asignaciones.length) {
+                    const { error: errObras } = await db.from('obras_encargados').insert(asignaciones);
+                    if (errObras) { alert('Encargado creado pero error en obras: ' + errObras.message); }
+                }
+                cerrarModal('modalEncargado'); 
+                await cargarDatosBase(); 
+                cargarEncargados();
+                alert('Encargado guardado correctamente ✓');
+            } catch(e) { 
+                alert('Error inesperado: ' + e.message); 
+            }
         }
 
         async function cargarPrecios() {
