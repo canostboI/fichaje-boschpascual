@@ -931,7 +931,7 @@
         }
         function editarEncargado(id) { abrirModalEncargado(encargados.find(e => e.id === id)); }
 
-        async async function guardarEncargado() {
+        async function guardarEncargado() {
             const id = $('encId').value;
             const data = { 
                 nombre: $('encNombre').value.trim(), 
