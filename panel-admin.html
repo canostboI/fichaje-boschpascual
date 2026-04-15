@@ -999,6 +999,38 @@
             cerrarModal('modalPrecio'); await cargarDatosBase(); cargarPrecios();
         }
 
+
+        // Hora límite para cierre automático virtual (sin crear registro)
+        const HORA_CIERRE_AUTO = 17.5; // 17:30
+
+        function calcularHorasTrabajadas(entrada, salida) {
+            let horas = (salida - entrada) / (1000 * 60 * 60);
+            // Descontar descanso
+            if (horas > 6) horas -= 1.5;
+            else if (horas > 4) horas -= 1;
+            return Math.max(0, Math.round(horas * 4) / 4);
+        }
+
+        function getSalidaEfectiva(entrada, salidas, fichajes) {
+            // Buscar salida real
+            const salidaReal = salidas.find(s => 
+                s.trabajador_id === entrada.trabajador_id && 
+                new Date(s.hora).toDateString() === new Date(entrada.hora).toDateString() && 
+                new Date(s.hora) > new Date(entrada.hora)
+            );
+            if (salidaReal) return { hora: new Date(salidaReal.hora), auto: false };
+            
+            // Si no hay salida, aplicar cierre virtual a las 17:30
+            const fechaEntrada = new Date(entrada.hora);
+            const cierre = new Date(fechaEntrada);
+            cierre.setHours(17, 30, 0, 0);
+            // Solo aplicar si la entrada fue antes de las 17:30 y el día ya pasó
+            if (fechaEntrada < cierre && new Date() > cierre) {
+                return { hora: cierre, auto: true };
+            }
+            return null; // Aún en obra o sin cierre posible
+        }
+
         async function generarProforma() {
             const obraId = $('proformaObra').value;
             const desde = $('proformaDesde').value;
@@ -1008,10 +1040,23 @@
             const { data: fichajes } = await db.from('fichajes').select('*, trabajadores(id, nombre, dni, categoria, empresa_id, precio_hora_personalizado, empresas(id, nombre, precio_hora_peon, precio_hora_oficial))').eq('obra_id', obraId).gte('hora', desde + 'T00:00:00').lte('hora', hasta + 'T23:59:59').order('hora');
             if (!fichajes?.length) { alert('No hay fichajes'); return; }
 
-            // Agrupar fichajes por empresa y día
+            const entradas = fichajes.filter(f => f.tipo === 'entrada' && f.trabajadores);
+            const salidas = fichajes.filter(f => f.tipo === 'salida');
+
+            // Generar lista de días en el rango
+            const diasRango = [];
+            const d1 = new Date(desde + 'T12:00:00');
+            const d2 = new Date(hasta + 'T12:00:00');
+            for (let d = new Date(d1); d <= d2; d.setDate(d.getDate() + 1)) {
+                diasRango.push(new Date(d).toISOString().split('T')[0]);
+            }
+
+            // Nombres de día de la semana
+            const nombreDia = d => ['D','L','M','X','J','V','S'][new Date(d + 'T12:00:00').getDay()];
+
+            // Agrupar por empresa
             const porEmpresa = {};
-            for (const f of fichajes) {
-                if (f.tipo !== 'entrada' || !f.trabajadores) continue;
+            for (const f of entradas) {
                 const trab = f.trabajadores;
                 const empresaId = trab.empresa_id || 'sin_empresa';
                 const empresaNombre = trab.empresas?.nombre || 'Sin empresa';
@@ -1019,39 +1064,46 @@
                 let precioOficial = trab.empresas?.precio_hora_oficial || 22;
                 const precioEsp = precios.find(p => p.obra_id === obraId && p.empresa_id === empresaId);
                 if (precioEsp) { precioPeon = precioEsp.precio_hora_peon; precioOficial = precioEsp.precio_hora_oficial; }
-                if (!porEmpresa[empresaId]) porEmpresa[empresaId] = { nombre: empresaNombre, precioPeon, precioOficial, dias: {} };
-                const fechaKey = new Date(f.hora).toISOString().split('T')[0];
-                if (!porEmpresa[empresaId].dias[fechaKey]) porEmpresa[empresaId].dias[fechaKey] = { trabajadores: [] };
-                const salida = fichajes.find(s => s.tipo === 'salida' && s.trabajador_id === f.trabajador_id && new Date(s.hora).toDateString() === new Date(f.hora).toDateString() && new Date(s.hora) > new Date(f.hora));
-                let horasTrabajadas = null;
-                if (salida) {
-                    let horas = Math.round(((new Date(salida.hora) - new Date(f.hora)) / (1000 * 60 * 60)) * 4) / 4;
-                    if (horas > 6) horas -= 1.5;
-                    else if (horas > 4) horas -= 1;
-                    horasTrabajadas = Math.max(0, horas);
+                if (!porEmpresa[empresaId]) porEmpresa[empresaId] = { nombre: empresaNombre, precioPeon, precioOficial, trabajadores: {} };
+
+                const trabKey = trab.id;
+                if (!porEmpresa[empresaId].trabajadores[trabKey]) {
+                    const precioHora = trab.precio_hora_personalizado || (trab.categoria === 'oficial' ? precioOficial : precioPeon);
+                    porEmpresa[empresaId].trabajadores[trabKey] = { 
+                        nombre: trab.nombre, dni: trab.dni, categoria: trab.categoria, precioHora, dias: {} 
+                    };
                 }
-                const precioHora = trab.precio_hora_personalizado || (trab.categoria === 'oficial' ? precioOficial : precioPeon);
-                porEmpresa[empresaId].dias[fechaKey].trabajadores.push({
-                    nombre: trab.nombre, dni: trab.dni, categoria: trab.categoria,
-                    entrada: formatTime(f.hora), salida: salida ? formatTime(salida.hora) : '⚠ Sin salida',
-                    horasTrabajadas, precioHora
-                });
+
+                const fechaKey = new Date(f.hora).toISOString().split('T')[0];
+                const salidaInfo = getSalidaEfectiva(f, salidas, fichajes);
+                let horas = null;
+                if (salidaInfo) {
+                    horas = calcularHorasTrabajadas(new Date(f.hora), salidaInfo.hora);
+                }
+                // Acumular horas si hay varias entradas el mismo día
+                if (!porEmpresa[empresaId].trabajadores[trabKey].dias[fechaKey]) {
+                    porEmpresa[empresaId].trabajadores[trabKey].dias[fechaKey] = { horas: 0, auto: false };
+                }
+                if (horas !== null) {
+                    porEmpresa[empresaId].trabajadores[trabKey].dias[fechaKey].horas += horas;
+                    if (salidaInfo.auto) porEmpresa[empresaId].trabajadores[trabKey].dias[fechaKey].auto = true;
+                }
             }
 
-            // Colores corporativos
+            // Colores
             const C = {
                 title: { bg: 'FF0D4444', fg: 'FFFFFFFF' },
                 subtitle: { bg: 'FF2C8F8F', fg: 'FFFFFFFF' },
-                period: { bg: 'FF3DA8A8', fg: 'FFFFFFFF' },
                 header: { bg: 'FF1A6B6B', fg: 'FFFFFFFF' },
+                dayHeader: { bg: 'FF238787', fg: 'FFFFFFFF' },
                 peon: { bg: 'FFE8F4F4', fg: 'FF1A5C5C' },
                 oficial: { bg: 'FFD0EBEB', fg: 'FF0D4444' },
-                subtotal_peon: { bg: 'FFD6F0EE', fg: 'FF1A5C5C' },
-                subtotal_of: { bg: 'FFB8E0DD', fg: 'FF0D4444' },
                 total: { bg: 'FF1A6B6B', fg: 'FFFFFFFF' },
-                rowAlt: { bg: 'FFF4FAFA' },
-                detail: { bg: 'FFF9F9F9', fg: 'FF666666' },
-                border: { color: { argb: 'FFB2D8D8' } }
+                subtotalCat: { bg: 'FFD6F0EE', fg: 'FF1A5C5C' },
+                rowAlt: 'FFF4FAFA',
+                weekend: 'FFFFF3E0',
+                border: { color: { argb: 'FFB2D8D8' } },
+                auto: 'FFFFF9C4'
             };
             const thinBorder = { top: { style: 'thin', color: C.border.color }, bottom: { style: 'thin', color: C.border.color }, left: { style: 'thin', color: C.border.color }, right: { style: 'thin', color: C.border.color } };
 
@@ -1060,265 +1112,306 @@
 
             for (const empresaId in porEmpresa) {
                 const emp = porEmpresa[empresaId];
+                const trabList = Object.values(emp.trabajadores);
+                if (!trabList.length) continue;
+
                 const sheetName = emp.nombre.substring(0, 31).replace(/[\\/*?:\[\]]/g, '');
                 const ws = wb.addWorksheet(sheetName);
 
-                ws.columns = [
-                    { width: 18 }, { width: 13 }, { width: 13 }, { width: 14 },
-                    { width: 14 }, { width: 14 }, { width: 15 }, { width: 55 }
-                ];
+                const numDias = diasRango.length;
+                const colNombre = 1, colDNI = 2, colCat = 3;
+                const colDiaInicio = 4;
+                const colDiaFin = colDiaInicio + numDias - 1;
+                const colTotalH = colDiaFin + 1;
+                const colPrecio = colTotalH + 1;
+                const colImporte = colPrecio + 1;
+                const totalCols = colImporte;
 
-                // === CABECERA ===
-                // Fila 1: Título
-                const row1 = ws.addRow(['BOSCH PASCUAL — PROFORMA DE HORAS','','','','','','','']);
-                ws.mergeCells(row1.number, 1, row1.number, 8);
-                row1.height = 28;
-                row1.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.title.bg } };
-                row1.getCell(1).font = { name: 'Calibri', size: 16, bold: true, color: { argb: C.title.fg } };
-                row1.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+                // Anchos de columna
+                ws.getColumn(colNombre).width = 28;
+                ws.getColumn(colDNI).width = 16;
+                ws.getColumn(colCat).width = 10;
+                for (let i = colDiaInicio; i <= colDiaFin; i++) ws.getColumn(i).width = 5;
+                ws.getColumn(colTotalH).width = 10;
+                ws.getColumn(colPrecio).width = 10;
+                ws.getColumn(colImporte).width = 12;
 
-                // Fila 2: Subcontrata y Obra
-                const row2 = ws.addRow([`Subcontrata: ${emp.nombre}`,'','','',`Obra: ${obra.nombre}`,'','','']);
-                ws.mergeCells(row2.number, 1, row2.number, 4);
-                ws.mergeCells(row2.number, 5, row2.number, 8);
-                row2.height = 22;
-                for (let c = 1; c <= 8; c++) {
-                    row2.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subtitle.bg } };
-                    row2.getCell(c).font = { name: 'Calibri', size: 12, bold: true, color: { argb: C.subtitle.fg } };
-                    row2.getCell(c).alignment = { vertical: 'middle' };
+                // FILA 1: Título
+                const r1 = ws.addRow([]);
+                r1.getCell(colNombre).value = 'CONTROL DE PERSONAL DE OBRA';
+                ws.mergeCells(r1.number, colNombre, r1.number, totalCols);
+                r1.height = 30;
+                r1.getCell(colNombre).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.title.bg } };
+                r1.getCell(colNombre).font = { name: 'Calibri', size: 16, bold: true, color: { argb: C.title.fg } };
+                r1.getCell(colNombre).alignment = { horizontal: 'center', vertical: 'middle' };
+
+                // FILA 2: Info obra y empresa
+                const r2 = ws.addRow([]);
+                r2.getCell(colNombre).value = `Obra: ${obra.nombre}`;
+                ws.mergeCells(r2.number, colNombre, r2.number, colCat);
+                r2.getCell(colDiaInicio).value = `Subcontrata: ${emp.nombre}`;
+                ws.mergeCells(r2.number, colDiaInicio, r2.number, colDiaInicio + Math.floor(numDias / 2) - 1);
+                r2.getCell(colDiaInicio + Math.floor(numDias / 2)).value = `Período: ${formatDate(desde + 'T12:00:00')} — ${formatDate(hasta + 'T12:00:00')}`;
+                ws.mergeCells(r2.number, colDiaInicio + Math.floor(numDias / 2), r2.number, totalCols);
+                r2.height = 22;
+                for (let c = colNombre; c <= totalCols; c++) {
+                    r2.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subtitle.bg } };
+                    r2.getCell(c).font = { name: 'Calibri', size: 11, bold: true, color: { argb: C.subtitle.fg } };
+                    r2.getCell(c).alignment = { vertical: 'middle' };
+                    r2.getCell(c).border = thinBorder;
                 }
 
-                // Fila 3: Período y Precios
-                const row3 = ws.addRow([`Período: ${formatDate(desde + 'T12:00:00')} — ${formatDate(hasta + 'T12:00:00')}`,'','','',`Precio Peón: ${emp.precioPeon}€/h  |  Precio Oficial: ${emp.precioOficial}€/h`,'','','']);
-                ws.mergeCells(row3.number, 1, row3.number, 4);
-                ws.mergeCells(row3.number, 5, row3.number, 8);
-                row3.height = 20;
-                for (let c = 1; c <= 8; c++) {
-                    row3.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.period.bg } };
-                    row3.getCell(c).font = { name: 'Calibri', size: 10, color: { argb: C.period.fg } };
-                    row3.getCell(c).alignment = { vertical: 'middle' };
+                // FILA 3: Día de la semana (L, M, X...)
+                const r3 = ws.addRow([]);
+                r3.getCell(colNombre).value = 'NOMBRE';
+                r3.getCell(colDNI).value = 'DNI';
+                r3.getCell(colCat).value = 'CAT.';
+                for (let i = 0; i < numDias; i++) {
+                    r3.getCell(colDiaInicio + i).value = nombreDia(diasRango[i]);
+                }
+                r3.getCell(colTotalH).value = 'HORAS';
+                r3.getCell(colPrecio).value = '€/H';
+                r3.getCell(colImporte).value = 'IMPORTE';
+                r3.height = 18;
+                for (let c = colNombre; c <= totalCols; c++) {
+                    r3.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.dayHeader.bg } };
+                    r3.getCell(c).font = { name: 'Calibri', size: 9, bold: true, color: { argb: C.dayHeader.fg } };
+                    r3.getCell(c).alignment = { horizontal: 'center', vertical: 'middle' };
+                    r3.getCell(c).border = thinBorder;
                 }
 
-                // Fila 4: vacía
-                ws.addRow([]);
-
-                // Fila 5: Cabecera columnas
-                const headers = ['FECHA', 'H. PEÓN', 'H. OFICIAL', 'TOTAL H.', 'IMP. PEÓN', 'IMP. OFICIAL', 'TOTAL DÍA', 'DETALLE TRABAJADORES'];
-                const rowH = ws.addRow(headers);
-                rowH.height = 22;
-                for (let c = 1; c <= 8; c++) {
-                    const cell = rowH.getCell(c);
-                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.header.bg } };
-                    cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: C.header.fg } };
-                    cell.alignment = { horizontal: 'center', vertical: 'middle' };
-                    cell.border = thinBorder;
+                // FILA 4: Número del día (1, 2, 3...)
+                const r4 = ws.addRow([]);
+                r4.getCell(colNombre).value = '';
+                r4.getCell(colDNI).value = '';
+                r4.getCell(colCat).value = '';
+                for (let i = 0; i < numDias; i++) {
+                    r4.getCell(colDiaInicio + i).value = parseInt(diasRango[i].split('-')[2]);
+                }
+                r4.getCell(colTotalH).value = 'MES';
+                r4.getCell(colPrecio).value = '';
+                r4.getCell(colImporte).value = '€';
+                r4.height = 18;
+                for (let c = colNombre; c <= totalCols; c++) {
+                    const esFinde = c >= colDiaInicio && c <= colDiaFin && ['S','D'].includes(nombreDia(diasRango[c - colDiaInicio]));
+                    r4.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: esFinde ? C.weekend : C.header.bg } };
+                    r4.getCell(c).font = { name: 'Calibri', size: 9, bold: true, color: { argb: esFinde ? 'FF333333' : C.header.fg } };
+                    r4.getCell(c).alignment = { horizontal: 'center', vertical: 'middle' };
+                    r4.getCell(c).border = thinBorder;
                 }
 
-                // === FILAS DE DATOS ===
-                let totalPeon = 0, totalOficial = 0, totalImportePeon = 0, totalImporteOficial = 0;
-                const fechas = Object.keys(emp.dias).sort();
+                // FILAS DE DATOS: un trabajador por fila
+                const dataStartRow = ws.rowCount + 1;
                 let rowAlt = false;
 
-                for (const fechaKey of fechas) {
-                    const dia = emp.dias[fechaKey];
-                    let hPeon = 0, hOficial = 0, impPeon = 0, impOficial = 0;
-                    let incompleto = false;
-                    const detalles = [];
+                // Separar por categoría
+                const oficiales = trabList.filter(t => t.categoria === 'oficial');
+                const peones = trabList.filter(t => t.categoria !== 'oficial');
 
-                    for (const trab of dia.trabajadores) {
-                        if (trab.horasTrabajadas === null) { incompleto = true; detalles.push(`⚠ ${trab.nombre} (sin salida)`); continue; }
-                        if (trab.categoria === 'peon') { hPeon += trab.horasTrabajadas; impPeon += trab.horasTrabajadas * trab.precioHora; }
-                        else { hOficial += trab.horasTrabajadas; impOficial += trab.horasTrabajadas * trab.precioHora; }
-                        detalles.push(`${trab.nombre} (${trab.categoria === 'oficial' ? 'Of.' : 'Peón'}) ${trab.entrada}-${trab.salida} = ${trab.horasTrabajadas}h`);
-                    }
+                function addTrabajadorRows(lista, catLabel) {
+                    if (!lista.length) return;
+                    for (const trab of lista) {
+                        const row = ws.addRow([]);
+                        const bgColor = rowAlt ? C.rowAlt : 'FFFFFFFF';
+                        const catStyle = trab.categoria === 'oficial' ? C.oficial : C.peon;
 
-                    hPeon = Math.round(hPeon * 4) / 4;
-                    hOficial = Math.round(hOficial * 4) / 4;
-                    const totalHDia = hPeon + hOficial;
-                    const totalImpDia = impPeon + impOficial;
-                    totalPeon += hPeon; totalOficial += hOficial;
-                    totalImportePeon += impPeon; totalImporteOficial += impOficial;
+                        row.getCell(colNombre).value = trab.nombre;
+                        row.getCell(colNombre).font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF333333' } };
 
-                    const bgColor = rowAlt ? C.rowAlt.bg : 'FFFFFFFF';
-                    const flagIncompleto = incompleto ? ' ⚠' : '';
+                        row.getCell(colDNI).value = trab.dni;
+                        row.getCell(colDNI).font = { name: 'Calibri', size: 9, color: { argb: 'FF666666' } };
 
-                    const dataRow = ws.addRow([
-                        formatDate(fechaKey + 'T12:00:00') + flagIncompleto,
-                        hPeon > 0 ? hPeon : null,
-                        hOficial > 0 ? hOficial : null,
-                        totalHDia > 0 ? totalHDia : null,
-                        impPeon > 0 ? impPeon : null,
-                        impOficial > 0 ? impOficial : null,
-                        totalImpDia > 0 ? totalImpDia : null,
-                        detalles.join('  |  ')
-                    ]);
-                    dataRow.height = 18;
+                        row.getCell(colCat).value = trab.categoria === 'oficial' ? 'OF' : 'PE';
+                        row.getCell(colCat).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: catStyle.bg } };
+                        row.getCell(colCat).font = { name: 'Calibri', size: 9, bold: true, color: { argb: catStyle.fg } };
 
-                    // Estilo fecha
-                    const c1 = dataRow.getCell(1);
-                    c1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
-                    c1.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF333333' } };
-                    c1.border = thinBorder;
+                        let totalHoras = 0;
+                        for (let i = 0; i < numDias; i++) {
+                            const cell = row.getCell(colDiaInicio + i);
+                            const diaKey = diasRango[i];
+                            const diaData = trab.dias[diaKey];
+                            const esFinde = ['S','D'].includes(nombreDia(diaKey));
 
-                    // Horas peón (col 2)
-                    const c2 = dataRow.getCell(2);
-                    c2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.peon.bg } };
-                    c2.font = { name: 'Calibri', size: 10, bold: true, color: { argb: C.peon.fg } };
-                    c2.alignment = { horizontal: 'center' }; c2.border = thinBorder;
-                    if (c2.value) c2.numFmt = '0.00"h"';
-
-                    // Horas oficial (col 3)
-                    const c3 = dataRow.getCell(3);
-                    c3.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.oficial.bg } };
-                    c3.font = { name: 'Calibri', size: 10, bold: true, color: { argb: C.oficial.fg } };
-                    c3.alignment = { horizontal: 'center' }; c3.border = thinBorder;
-                    if (c3.value) c3.numFmt = '0.00"h"';
-
-                    // Total horas (col 4)
-                    const c4 = dataRow.getCell(4);
-                    c4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
-                    c4.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF333333' } };
-                    c4.alignment = { horizontal: 'center' }; c4.border = thinBorder;
-                    if (c4.value) c4.numFmt = '0.00"h"';
-
-                    // Importe peón (col 5)
-                    const c5 = dataRow.getCell(5);
-                    c5.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.peon.bg } };
-                    c5.font = { name: 'Calibri', size: 10, color: { argb: C.peon.fg } };
-                    c5.alignment = { horizontal: 'center' }; c5.border = thinBorder;
-                    if (c5.value) c5.numFmt = '#,##0.00"€"';
-
-                    // Importe oficial (col 6)
-                    const c6 = dataRow.getCell(6);
-                    c6.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.oficial.bg } };
-                    c6.font = { name: 'Calibri', size: 10, color: { argb: C.oficial.fg } };
-                    c6.alignment = { horizontal: 'center' }; c6.border = thinBorder;
-                    if (c6.value) c6.numFmt = '#,##0.00"€"';
-
-                    // Total día (col 7)
-                    const c7 = dataRow.getCell(7);
-                    c7.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
-                    c7.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF1A6B6B' } };
-                    c7.alignment = { horizontal: 'center' }; c7.border = thinBorder;
-                    if (c7.value) c7.numFmt = '#,##0.00"€"';
-
-                    // Detalle (col 8)
-                    const c8 = dataRow.getCell(8);
-                    c8.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.detail.bg } };
-                    c8.font = { name: 'Calibri', size: 9, italic: true, color: { argb: C.detail.fg } };
-                    c8.alignment = { wrapText: true }; c8.border = thinBorder;
-
-                    rowAlt = !rowAlt;
-                }
-
-                // Fila vacía
-                ws.addRow([]);
-
-                // === SUBTOTAL PEONES ===
-                const rowSP = ws.addRow(['SUBTOTAL PEONES', totalPeon, '', '', totalImportePeon, '', '', '']);
-                ws.mergeCells(rowSP.number, 3, rowSP.number, 4);
-                ws.mergeCells(rowSP.number, 6, rowSP.number, 8);
-                rowSP.height = 22;
-                for (let c = 1; c <= 8; c++) {
-                    const cell = rowSP.getCell(c);
-                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subtotal_peon.bg } };
-                    cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: C.subtotal_peon.fg } };
-                    cell.alignment = { horizontal: c === 1 ? 'left' : 'center', vertical: 'middle' };
-                    cell.border = thinBorder;
-                }
-                rowSP.getCell(2).numFmt = '0.00"h"';
-                rowSP.getCell(5).numFmt = '#,##0.00"€"';
-
-                // === SUBTOTAL OFICIALES ===
-                const rowSO = ws.addRow(['SUBTOTAL OFICIALES', '', totalOficial, '', '', totalImporteOficial, '', '']);
-                ws.mergeCells(rowSO.number, 1, rowSO.number, 2);
-                ws.mergeCells(rowSO.number, 4, rowSO.number, 5);
-                ws.mergeCells(rowSO.number, 7, rowSO.number, 8);
-                rowSO.height = 22;
-                for (let c = 1; c <= 8; c++) {
-                    const cell = rowSO.getCell(c);
-                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subtotal_of.bg } };
-                    cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: C.subtotal_of.fg } };
-                    cell.alignment = { horizontal: c === 1 ? 'left' : 'center', vertical: 'middle' };
-                    cell.border = thinBorder;
-                }
-                rowSO.getCell(3).numFmt = '0.00"h"';
-                rowSO.getCell(6).numFmt = '#,##0.00"€"';
-
-                // === TOTAL FINAL ===
-                const totalHoras = totalPeon + totalOficial;
-                const totalImporte = totalImportePeon + totalImporteOficial;
-                const rowT = ws.addRow(['TOTAL A FACTURAR', '', totalHoras, '', '', '', totalImporte, '']);
-                ws.mergeCells(rowT.number, 1, rowT.number, 2);
-                ws.mergeCells(rowT.number, 4, rowT.number, 5);
-                ws.mergeCells(rowT.number, 7, rowT.number, 8);
-                rowT.height = 26;
-                for (let c = 1; c <= 8; c++) {
-                    const cell = rowT.getCell(c);
-                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.total.bg } };
-                    cell.font = { name: 'Calibri', size: 13, bold: true, color: { argb: C.total.fg } };
-                    cell.alignment = { horizontal: c === 1 ? 'left' : 'center', vertical: 'middle' };
-                    cell.border = thinBorder;
-                }
-                rowT.getCell(3).numFmt = '0.00"h"';
-                rowT.getCell(7).numFmt = '#,##0.00"€"';
-
-                // Fila vacía + desglose por trabajador
-                ws.addRow([]);
-                ws.addRow([]);
-                const rowDT = ws.addRow(['DESGLOSE POR TRABAJADOR','','','','','','','']);
-                ws.mergeCells(rowDT.number, 1, rowDT.number, 8);
-                rowDT.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.header.bg } };
-                rowDT.getCell(1).font = { name: 'Calibri', size: 12, bold: true, color: { argb: C.header.fg } };
-                rowDT.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
-                rowDT.height = 24;
-
-                const rowDH = ws.addRow(['TRABAJADOR', 'DNI', 'CATEGORÍA', 'DÍAS', 'TOTAL HORAS', '€/HORA', 'IMPORTE', '']);
-                ws.mergeCells(rowDH.number, 7, rowDH.number, 8);
-                rowDH.height = 20;
-                for (let c = 1; c <= 8; c++) {
-                    const cell = rowDH.getCell(c);
-                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subtitle.bg } };
-                    cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: C.subtitle.fg } };
-                    cell.alignment = { horizontal: 'center', vertical: 'middle' };
-                    cell.border = thinBorder;
-                }
-
-                // Calcular resumen por trabajador
-                const porTrabajador = {};
-                for (const fechaKey in emp.dias) {
-                    for (const trab of emp.dias[fechaKey].trabajadores) {
-                        const key = trab.dni || trab.nombre;
-                        if (!porTrabajador[key]) porTrabajador[key] = { nombre: trab.nombre, dni: trab.dni, categoria: trab.categoria, precioHora: trab.precioHora, dias: 0, horas: 0, importe: 0 };
-                        if (trab.horasTrabajadas !== null) {
-                            porTrabajador[key].dias++;
-                            porTrabajador[key].horas += trab.horasTrabajadas;
-                            porTrabajador[key].importe += trab.horasTrabajadas * trab.precioHora;
+                            if (diaData && diaData.horas > 0) {
+                                cell.value = diaData.horas;
+                                cell.numFmt = '0.#';
+                                totalHoras += diaData.horas;
+                                if (diaData.auto) {
+                                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.auto } };
+                                    cell.note = 'Salida automática 17:30';
+                                } else if (esFinde) {
+                                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.weekend } };
+                                }
+                            } else if (esFinde) {
+                                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.weekend } };
+                            }
+                            cell.font = { name: 'Calibri', size: 9, color: { argb: 'FF333333' } };
+                            cell.alignment = { horizontal: 'center' };
+                            cell.border = thinBorder;
                         }
+
+                        // Total horas
+                        row.getCell(colTotalH).value = totalHoras;
+                        row.getCell(colTotalH).numFmt = '0.00';
+                        row.getCell(colTotalH).font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF1A6B6B' } };
+                        row.getCell(colTotalH).alignment = { horizontal: 'center' };
+                        row.getCell(colTotalH).border = thinBorder;
+
+                        // Precio/hora
+                        row.getCell(colPrecio).value = trab.precioHora;
+                        row.getCell(colPrecio).numFmt = '#,##0.00"€"';
+                        row.getCell(colPrecio).font = { name: 'Calibri', size: 9, color: { argb: 'FF666666' } };
+                        row.getCell(colPrecio).alignment = { horizontal: 'center' };
+                        row.getCell(colPrecio).border = thinBorder;
+
+                        // Importe
+                        row.getCell(colImporte).value = totalHoras * trab.precioHora;
+                        row.getCell(colImporte).numFmt = '#,##0.00"€"';
+                        row.getCell(colImporte).font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF1A6B6B' } };
+                        row.getCell(colImporte).alignment = { horizontal: 'center' };
+                        row.getCell(colImporte).border = thinBorder;
+
+                        // Fondo alterno para nombre y DNI
+                        row.getCell(colNombre).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+                        row.getCell(colDNI).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+                        row.getCell(colNombre).border = thinBorder;
+                        row.getCell(colDNI).border = thinBorder;
+                        row.getCell(colCat).border = thinBorder;
+                        row.getCell(colNombre).alignment = { vertical: 'middle' };
+                        row.getCell(colDNI).alignment = { horizontal: 'center', vertical: 'middle' };
+                        row.getCell(colCat).alignment = { horizontal: 'center', vertical: 'middle' };
+
+                        row.height = 18;
+                        rowAlt = !rowAlt;
                     }
                 }
 
-                let altTrab = false;
-                for (const key in porTrabajador) {
-                    const t = porTrabajador[key];
-                    const bgT = altTrab ? C.rowAlt.bg : 'FFFFFFFF';
-                    const catBg = t.categoria === 'oficial' ? C.oficial.bg : C.peon.bg;
-                    const catFg = t.categoria === 'oficial' ? C.oficial.fg : C.peon.fg;
-                    const rowTr = ws.addRow([t.nombre, t.dni, t.categoria === 'oficial' ? 'Oficial' : 'Peón', t.dias, t.horas, t.precioHora, t.importe, '']);
-                    ws.mergeCells(rowTr.number, 7, rowTr.number, 8);
-                    rowTr.height = 18;
-                    for (let c = 1; c <= 8; c++) {
-                        const cell = rowTr.getCell(c);
-                        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: c === 3 ? catBg : bgT } };
-                        cell.font = { name: 'Calibri', size: 10, color: { argb: c === 3 ? catFg : 'FF333333' }, bold: c === 1 };
-                        cell.alignment = { horizontal: c <= 2 ? 'left' : 'center', vertical: 'middle' };
-                        cell.border = thinBorder;
+                // Oficiales
+                if (oficiales.length) {
+                    const rCat = ws.addRow([]);
+                    rCat.getCell(colNombre).value = 'OFICIALES';
+                    ws.mergeCells(rCat.number, colNombre, rCat.number, colCat);
+                    rCat.height = 20;
+                    for (let c = colNombre; c <= totalCols; c++) {
+                        rCat.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.oficial.bg } };
+                        rCat.getCell(c).font = { name: 'Calibri', size: 10, bold: true, color: { argb: C.oficial.fg } };
+                        rCat.getCell(c).border = thinBorder;
                     }
-                    rowTr.getCell(5).numFmt = '0.00"h"';
-                    rowTr.getCell(6).numFmt = '#,##0.00"€"';
-                    rowTr.getCell(7).numFmt = '#,##0.00"€"';
-                    altTrab = !altTrab;
+                    rCat.getCell(colNombre).alignment = { vertical: 'middle' };
+                    addTrabajadorRows(oficiales);
                 }
+
+                // Peones
+                if (peones.length) {
+                    const rCat = ws.addRow([]);
+                    rCat.getCell(colNombre).value = 'PEONES';
+                    ws.mergeCells(rCat.number, colNombre, rCat.number, colCat);
+                    rCat.height = 20;
+                    for (let c = colNombre; c <= totalCols; c++) {
+                        rCat.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.peon.bg } };
+                        rCat.getCell(c).font = { name: 'Calibri', size: 10, bold: true, color: { argb: C.peon.fg } };
+                        rCat.getCell(c).border = thinBorder;
+                    }
+                    rCat.getCell(colNombre).alignment = { vertical: 'middle' };
+                    addTrabajadorRows(peones);
+                }
+
+                // FILA VACÍA
+                ws.addRow([]);
+
+                // FILA TOTALES POR DÍA
+                const rTot = ws.addRow([]);
+                rTot.getCell(colNombre).value = 'TOTAL HORAS/DÍA';
+                ws.mergeCells(rTot.number, colNombre, rTot.number, colCat);
+                rTot.height = 22;
+
+                let granTotalH = 0, granTotalImporte = 0;
+                for (const trab of trabList) {
+                    for (const diaKey in trab.dias) {
+                        granTotalH += trab.dias[diaKey].horas || 0;
+                        granTotalImporte += (trab.dias[diaKey].horas || 0) * trab.precioHora;
+                    }
+                }
+
+                for (let i = 0; i < numDias; i++) {
+                    const diaKey = diasRango[i];
+                    let totalDia = 0;
+                    for (const trab of trabList) {
+                        totalDia += trab.dias[diaKey]?.horas || 0;
+                    }
+                    const cell = rTot.getCell(colDiaInicio + i);
+                    cell.value = totalDia > 0 ? totalDia : null;
+                    if (totalDia > 0) cell.numFmt = '0.#';
+                }
+                rTot.getCell(colTotalH).value = granTotalH;
+                rTot.getCell(colTotalH).numFmt = '0.00';
+                rTot.getCell(colImporte).value = granTotalImporte;
+                rTot.getCell(colImporte).numFmt = '#,##0.00"€"';
+
+                for (let c = colNombre; c <= totalCols; c++) {
+                    rTot.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.total.bg } };
+                    rTot.getCell(c).font = { name: 'Calibri', size: 10, bold: true, color: { argb: C.total.fg } };
+                    rTot.getCell(c).alignment = { horizontal: 'center', vertical: 'middle' };
+                    rTot.getCell(c).border = thinBorder;
+                }
+                rTot.getCell(colNombre).alignment = { horizontal: 'left', vertical: 'middle' };
+
+                // FILA RESUMEN CATEGORÍAS
+                const totalOfH = oficiales.reduce((s, t) => s + Object.values(t.dias).reduce((a, d) => a + (d.horas || 0), 0), 0);
+                const totalPeH = peones.reduce((s, t) => s + Object.values(t.dias).reduce((a, d) => a + (d.horas || 0), 0), 0);
+                const totalOfImp = oficiales.reduce((s, t) => { const h = Object.values(t.dias).reduce((a, d) => a + (d.horas || 0), 0); return s + h * t.precioHora; }, 0);
+                const totalPeImp = peones.reduce((s, t) => { const h = Object.values(t.dias).reduce((a, d) => a + (d.horas || 0), 0); return s + h * t.precioHora; }, 0);
+
+                ws.addRow([]);
+                const rRes = ws.addRow([]);
+                rRes.getCell(colNombre).value = 'RESUMEN';
+                ws.mergeCells(rRes.number, colNombre, rRes.number, colCat);
+                rRes.height = 20;
+                for (let c = colNombre; c <= totalCols; c++) {
+                    rRes.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.header.bg } };
+                    rRes.getCell(c).font = { name: 'Calibri', size: 11, bold: true, color: { argb: C.header.fg } };
+                    rRes.getCell(c).border = thinBorder;
+                }
+
+                const rOf = ws.addRow([]);
+                rOf.getCell(colNombre).value = `Oficiales (${oficiales.length})`;
+                rOf.getCell(colTotalH).value = totalOfH; rOf.getCell(colTotalH).numFmt = '0.00"h"';
+                rOf.getCell(colImporte).value = totalOfImp; rOf.getCell(colImporte).numFmt = '#,##0.00"€"';
+                for (let c = colNombre; c <= totalCols; c++) {
+                    rOf.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.oficial.bg } };
+                    rOf.getCell(c).font = { name: 'Calibri', size: 10, bold: true, color: { argb: C.oficial.fg } };
+                    rOf.getCell(c).alignment = { horizontal: c === colNombre ? 'left' : 'center', vertical: 'middle' };
+                    rOf.getCell(c).border = thinBorder;
+                }
+
+                const rPe = ws.addRow([]);
+                rPe.getCell(colNombre).value = `Peones (${peones.length})`;
+                rPe.getCell(colTotalH).value = totalPeH; rPe.getCell(colTotalH).numFmt = '0.00"h"';
+                rPe.getCell(colImporte).value = totalPeImp; rPe.getCell(colImporte).numFmt = '#,##0.00"€"';
+                for (let c = colNombre; c <= totalCols; c++) {
+                    rPe.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.peon.bg } };
+                    rPe.getCell(c).font = { name: 'Calibri', size: 10, bold: true, color: { argb: C.peon.fg } };
+                    rPe.getCell(c).alignment = { horizontal: c === colNombre ? 'left' : 'center', vertical: 'middle' };
+                    rPe.getCell(c).border = thinBorder;
+                }
+
+                const rTF = ws.addRow([]);
+                rTF.getCell(colNombre).value = 'TOTAL A FACTURAR';
+                ws.mergeCells(rTF.number, colNombre, rTF.number, colPrecio);
+                rTF.getCell(colImporte).value = granTotalImporte; rTF.getCell(colImporte).numFmt = '#,##0.00"€"';
+                rTF.height = 26;
+                for (let c = colNombre; c <= totalCols; c++) {
+                    rTF.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.total.bg } };
+                    rTF.getCell(c).font = { name: 'Calibri', size: 13, bold: true, color: { argb: C.total.fg } };
+                    rTF.getCell(c).alignment = { horizontal: c === colNombre ? 'left' : 'center', vertical: 'middle' };
+                    rTF.getCell(c).border = thinBorder;
+                }
+
+                // Leyenda
+                ws.addRow([]);
+                const rLey = ws.addRow([]);
+                rLey.getCell(colNombre).value = '⬜ Celdas amarillas = salida automática 17:30 (sin fichaje de salida)';
+                rLey.getCell(colNombre).font = { name: 'Calibri', size: 9, italic: true, color: { argb: 'FF999999' } };
             }
 
             // Descargar
@@ -1421,6 +1514,15 @@
         }
 
         checkAuth();
+
+        // Auto-refresh dashboard y denegados cada 30 segundos
+        setInterval(() => {
+            if ($('app').style.display !== 'none') {
+                const secActiva = document.querySelector('.nav-item.active')?.dataset?.section;
+                if (secActiva === 'dashboard') cargarDashboard();
+                cargarDenegados(); // siempre actualizar badge
+            }
+        }, 30000);
     </script>
 </body>
 </html>
