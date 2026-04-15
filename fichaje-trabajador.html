@@ -8,6 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
     <style>
         :root {
             --bg: #0a0a0a; --surface: #131313; --border: rgba(255,255,255,0.08);
@@ -219,6 +220,42 @@
         const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlzdHJuc2ljbGVvcHpic3JhcHN3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4MTIxMTYsImV4cCI6MjA5MTM4ODExNn0.5UXV2LWPXmbfLI7rKpZSG9YBzZsesjckHnhQabA0mTY';
         const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+        // EmailJS - Configurar con tus credenciales (ver instrucciones al final)
+        // Estos valores se deben cambiar por los tuyos tras crear cuenta en emailjs.com
+        const EMAILJS_PUBLIC_KEY = 'TU_PUBLIC_KEY';       // Cambiar
+        const EMAILJS_SERVICE_ID = 'TU_SERVICE_ID';       // Cambiar
+        const EMAILJS_TEMPLATE_ID = 'TU_TEMPLATE_ID';     // Cambiar
+        const ADMIN_EMAIL = 'admin@tuempresa.com';         // Cambiar al email del admin
+
+        async function notificarAccesoDenegado(dni, obraNombre, motivo) {
+            try {
+                // Buscar encargados de esta obra para notificarles
+                const { data: asignaciones } = await db.from('obras_encargados')
+                    .select('encargados(nombre, email)')
+                    .eq('obra_id', obraId);
+                
+                const destinatarios = [ADMIN_EMAIL];
+                if (asignaciones) {
+                    for (const a of asignaciones) {
+                        if (a.encargados?.email) destinatarios.push(a.encargados.email);
+                    }
+                }
+
+                if (EMAILJS_PUBLIC_KEY === 'TU_PUBLIC_KEY') return; // No configurado aún
+
+                emailjs.init(EMAILJS_PUBLIC_KEY);
+                for (const email of destinatarios) {
+                    emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
+                        to_email: email,
+                        obra_nombre: obraNombre,
+                        dni_trabajador: dni,
+                        motivo: motivo,
+                        fecha_hora: new Date().toLocaleString('es-ES')
+                    }).catch(e => console.log('Email no enviado:', e));
+                }
+            } catch (e) { console.log('Error notificación:', e); }
+        }
+
         let obraId = null, obraData = null, trabajadorData = null, currentPosition = null;
         const $ = id => document.getElementById(id);
 
@@ -358,6 +395,7 @@
                         obra_id: obraId,
                         motivo: 'DNI no registrado en el sistema'
                     }]);
+                    notificarAccesoDenegado(dni, obraData.nombre, 'DNI no registrado en el sistema');
                     $('noRegObraName').textContent = obraData.nombre;
                     showScreen('screenNoRegistrado');
                     return;
@@ -388,6 +426,7 @@
                         obra_id: obraId,
                         motivo: motivo + ' - ' + trab.nombre
                     }]);
+                    notificarAccesoDenegado(dni, obraData.nombre, motivo + ' - ' + trab.nombre);
                     $('noValObraName').textContent = obraData.nombre;
                     showScreen('screenNoValidado');
                     return;
@@ -418,6 +457,42 @@
             const esTarde = tipo === 'entrada' && (ahora.getHours() > 8 || (ahora.getHours() === 8 && ahora.getMinutes() > 0));
 
             try {
+                // Si es entrada, cerrar salidas pendientes en OTRAS obras
+                if (tipo === 'entrada') {
+                    const hoy = new Date().toISOString().split('T')[0];
+                    const { data: entradasHoy } = await db.from('fichajes')
+                        .select('id, obra_id, trabajador_id, hora')
+                        .eq('trabajador_id', trabajadorData.id)
+                        .eq('tipo', 'entrada')
+                        .gte('hora', hoy + 'T00:00:00')
+                        .lte('hora', hoy + 'T23:59:59');
+                    
+                    if (entradasHoy) {
+                        const { data: salidasHoy } = await db.from('fichajes')
+                            .select('trabajador_id, obra_id, hora')
+                            .eq('trabajador_id', trabajadorData.id)
+                            .eq('tipo', 'salida')
+                            .gte('hora', hoy + 'T00:00:00')
+                            .lte('hora', hoy + 'T23:59:59');
+                        
+                        const salidaObras = new Set((salidasHoy || []).map(s => s.obra_id));
+                        const sinSalida = entradasHoy.filter(e => e.obra_id !== obraId && !salidaObras.has(e.obra_id));
+                        
+                        for (const entrada of sinSalida) {
+                            await db.from('fichajes').insert([{
+                                trabajador_id: trabajadorData.id,
+                                obra_id: entrada.obra_id,
+                                tipo: 'salida',
+                                hora: ahora.toISOString(),
+                                hora_redondeada: horaRedondeada.toISOString(),
+                                es_tarde: false,
+                                fuera_de_zona: false,
+                                cierre_automatico: true
+                            }]);
+                        }
+                    }
+                }
+
                 await db.from('fichajes').insert([{
                     trabajador_id: trabajadorData.id,
                     obra_id: obraId,
