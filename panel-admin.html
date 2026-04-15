@@ -8,6 +8,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
     <style>
         :root {
             --bg: #0a0a0a; --surface: #131313; --surface2: #1a1a1a; --border: rgba(255,255,255,0.08);
@@ -694,14 +695,14 @@
             const fechaDesde = $('histFechaDesde').value;
             const fechaHasta = $('histFechaHasta').value;
             
-            let query = db.from('fichajes').select('*, trabajadores(nombre, dni, empresa_id, empresas(nombre)), obras(nombre)', { count: 'exact' });
+            let query = db.from('fichajes').select('*, trabajadores!inner(nombre, dni, empresa_id, empresas(nombre)), obras(nombre)', { count: 'exact' });
             if (obraFiltro) query = query.eq('obra_id', obraFiltro);
+            if (empresaFiltro) query = query.eq('trabajadores.empresa_id', empresaFiltro);
             if (fechaDesde) query = query.gte('hora', fechaDesde + 'T00:00:00');
             if (fechaHasta) query = query.lte('hora', fechaHasta + 'T23:59:59');
             query = query.order('hora', { ascending: false }).range((historialPage - 1) * ITEMS_PER_PAGE, historialPage * ITEMS_PER_PAGE - 1);
             
             let { data: fichajes, count } = await query;
-            if (empresaFiltro && fichajes) fichajes = fichajes.filter(f => f.trabajadores?.empresa_id === empresaFiltro);
             
             if (fichajes && fichajes.length) {
                 let html = `<table><thead><tr><th>Trabajador</th><th>Fecha</th><th>Obra</th><th>Empresa</th><th>Entrada</th><th>Salida</th><th>Horas</th><th>Tipo</th><th>Acciones</th></tr></thead><tbody>`;
@@ -931,7 +932,7 @@
         }
         function editarEncargado(id) { abrirModalEncargado(encargados.find(e => e.id === id)); }
 
-        async async function guardarEncargado() {
+        async function guardarEncargado() {
             const id = $('encId').value;
             const data = { 
                 nombre: $('encNombre').value.trim(), 
@@ -1007,19 +1008,6 @@
             const { data: fichajes } = await db.from('fichajes').select('*, trabajadores(id, nombre, dni, categoria, empresa_id, precio_hora_personalizado, empresas(id, nombre, precio_hora_peon, precio_hora_oficial))').eq('obra_id', obraId).gte('hora', desde + 'T00:00:00').lte('hora', hasta + 'T23:59:59').order('hora');
             if (!fichajes?.length) { alert('No hay fichajes'); return; }
 
-            // Colores corporativos
-            const COLOR_HEADER_BG = '1A6B6B';
-            const COLOR_HEADER_FG = 'FFFFFF';
-            const COLOR_TITLE_BG = '0D4444';
-            const COLOR_SUBTOTAL_BG = 'D6EAE8';
-            const COLOR_TOTAL_BG = '1A6B6B';
-            const COLOR_TOTAL_FG = 'FFFFFF';
-            const COLOR_ROW_ALT = 'F4FAFA';
-            const COLOR_PEON = 'E8F4F4';
-            const COLOR_OFICIAL = 'D0EBEB';
-            const COLOR_DETAIL_BG = 'FAFAFA';
-            const COLOR_BORDER = 'B2D8D8';
-
             // Agrupar fichajes por empresa y día
             const porEmpresa = {};
             for (const f of fichajes) {
@@ -1031,12 +1019,9 @@
                 let precioOficial = trab.empresas?.precio_hora_oficial || 22;
                 const precioEsp = precios.find(p => p.obra_id === obraId && p.empresa_id === empresaId);
                 if (precioEsp) { precioPeon = precioEsp.precio_hora_peon; precioOficial = precioEsp.precio_hora_oficial; }
-
                 if (!porEmpresa[empresaId]) porEmpresa[empresaId] = { nombre: empresaNombre, precioPeon, precioOficial, dias: {} };
-
                 const fechaKey = new Date(f.hora).toISOString().split('T')[0];
                 if (!porEmpresa[empresaId].dias[fechaKey]) porEmpresa[empresaId].dias[fechaKey] = { trabajadores: [] };
-
                 const salida = fichajes.find(s => s.tipo === 'salida' && s.trabajador_id === f.trabajador_id && new Date(s.hora).toDateString() === new Date(f.hora).toDateString() && new Date(s.hora) > new Date(f.hora));
                 let horasTrabajadas = null;
                 if (salida) {
@@ -1053,61 +1038,90 @@
                 });
             }
 
-            const wb = XLSX.utils.book_new();
+            // Colores corporativos
+            const C = {
+                title: { bg: 'FF0D4444', fg: 'FFFFFFFF' },
+                subtitle: { bg: 'FF2C8F8F', fg: 'FFFFFFFF' },
+                period: { bg: 'FF3DA8A8', fg: 'FFFFFFFF' },
+                header: { bg: 'FF1A6B6B', fg: 'FFFFFFFF' },
+                peon: { bg: 'FFE8F4F4', fg: 'FF1A5C5C' },
+                oficial: { bg: 'FFD0EBEB', fg: 'FF0D4444' },
+                subtotal_peon: { bg: 'FFD6F0EE', fg: 'FF1A5C5C' },
+                subtotal_of: { bg: 'FFB8E0DD', fg: 'FF0D4444' },
+                total: { bg: 'FF1A6B6B', fg: 'FFFFFFFF' },
+                rowAlt: { bg: 'FFF4FAFA' },
+                detail: { bg: 'FFF9F9F9', fg: 'FF666666' },
+                border: { color: { argb: 'FFB2D8D8' } }
+            };
+            const thinBorder = { top: { style: 'thin', color: C.border.color }, bottom: { style: 'thin', color: C.border.color }, left: { style: 'thin', color: C.border.color }, right: { style: 'thin', color: C.border.color } };
+
+            const wb = new ExcelJS.Workbook();
+            wb.creator = 'Bosch Pascual';
 
             for (const empresaId in porEmpresa) {
                 const emp = porEmpresa[empresaId];
-                const ws_data = [];
-                const merges = [];
-                const styles_map = {}; // row -> col -> style
+                const sheetName = emp.nombre.substring(0, 31).replace(/[\\/*?:\[\]]/g, '');
+                const ws = wb.addWorksheet(sheetName);
 
-                const style = (bg, fg, bold, border, italic, sz, align) => ({
-                    fill: bg ? { fgColor: { rgb: bg } } : undefined,
-                    font: { color: { rgb: fg || '000000' }, bold: !!bold, italic: !!italic, sz: sz || 11, name: 'Calibri' },
-                    border: border ? { top: { style: 'thin', color: { rgb: COLOR_BORDER } }, bottom: { style: 'thin', color: { rgb: COLOR_BORDER } }, left: { style: 'thin', color: { rgb: COLOR_BORDER } }, right: { style: 'thin', color: { rgb: COLOR_BORDER } } } : undefined,
-                    alignment: { horizontal: align || 'left', vertical: 'center', wrapText: true }
-                });
+                ws.columns = [
+                    { width: 18 }, { width: 13 }, { width: 13 }, { width: 14 },
+                    { width: 14 }, { width: 14 }, { width: 15 }, { width: 55 }
+                ];
 
-                let r = 0;
+                // === CABECERA ===
+                // Fila 1: Título
+                const row1 = ws.addRow(['BOSCH PASCUAL — PROFORMA DE HORAS','','','','','','','']);
+                ws.mergeCells(row1.number, 1, row1.number, 8);
+                row1.height = 28;
+                row1.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.title.bg } };
+                row1.getCell(1).font = { name: 'Calibri', size: 16, bold: true, color: { argb: C.title.fg } };
+                row1.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
 
-                // CABECERA EMPRESA
-                ws_data.push(['BOSCH PASCUAL — PROFORMA DE HORAS', '', '', '', '', '', '', '']);
-                merges.push({ s: { r, c: 0 }, e: { r, c: 7 } });
-                styles_map[r] = { 0: style(COLOR_TITLE_BG, 'FFFFFF', true, false, false, 16, 'center') };
-                r++;
-
-                ws_data.push([`Subcontrata: ${emp.nombre}`, '', '', '', `Obra: ${obra.nombre}`, '', '', '']);
-                merges.push({ s: { r, c: 0 }, e: { r, c: 3 } });
-                merges.push({ s: { r, c: 4 }, e: { r, c: 7 } });
-                styles_map[r] = { 0: style('2C8F8F', 'FFFFFF', true, false, false, 12, 'left'), 4: style('2C8F8F', 'FFFFFF', true, false, false, 12, 'left') };
-                r++;
-
-                ws_data.push([`Período: ${formatDate(desde + 'T12:00:00')} — ${formatDate(hasta + 'T12:00:00')}`, '', '', '', `Precio Peón: ${emp.precioPeon}€/h   |   Precio Oficial: ${emp.precioOficial}€/h`, '', '', '']);
-                merges.push({ s: { r, c: 0 }, e: { r, c: 3 } });
-                merges.push({ s: { r, c: 4 }, e: { r, c: 7 } });
-                styles_map[r] = { 0: style('3DA8A8', 'FFFFFF', false, false, false, 10, 'left'), 4: style('3DA8A8', 'FFFFFF', false, false, false, 10, 'left') };
-                r++;
-
-                ws_data.push(['', '', '', '', '', '', '', '']);
-                r++;
-
-                // CABECERA COLUMNAS RESUMEN
-                const colHeaders = ['FECHA', 'H. PEÓN', 'H. OFICIAL', 'TOTAL HORAS', 'IMP. PEÓN', 'IMP. OFICIAL', 'TOTAL DÍA', 'DETALLE'];
-                ws_data.push(colHeaders);
-                styles_map[r] = {};
-                for (let c = 0; c < colHeaders.length; c++) {
-                    styles_map[r][c] = style(COLOR_HEADER_BG, COLOR_HEADER_FG, true, true, false, 11, 'center');
+                // Fila 2: Subcontrata y Obra
+                const row2 = ws.addRow([`Subcontrata: ${emp.nombre}`,'','','',`Obra: ${obra.nombre}`,'','','']);
+                ws.mergeCells(row2.number, 1, row2.number, 4);
+                ws.mergeCells(row2.number, 5, row2.number, 8);
+                row2.height = 22;
+                for (let c = 1; c <= 8; c++) {
+                    row2.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subtitle.bg } };
+                    row2.getCell(c).font = { name: 'Calibri', size: 12, bold: true, color: { argb: C.subtitle.fg } };
+                    row2.getCell(c).alignment = { vertical: 'middle' };
                 }
-                r++;
 
+                // Fila 3: Período y Precios
+                const row3 = ws.addRow([`Período: ${formatDate(desde + 'T12:00:00')} — ${formatDate(hasta + 'T12:00:00')}`,'','','',`Precio Peón: ${emp.precioPeon}€/h  |  Precio Oficial: ${emp.precioOficial}€/h`,'','','']);
+                ws.mergeCells(row3.number, 1, row3.number, 4);
+                ws.mergeCells(row3.number, 5, row3.number, 8);
+                row3.height = 20;
+                for (let c = 1; c <= 8; c++) {
+                    row3.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.period.bg } };
+                    row3.getCell(c).font = { name: 'Calibri', size: 10, color: { argb: C.period.fg } };
+                    row3.getCell(c).alignment = { vertical: 'middle' };
+                }
+
+                // Fila 4: vacía
+                ws.addRow([]);
+
+                // Fila 5: Cabecera columnas
+                const headers = ['FECHA', 'H. PEÓN', 'H. OFICIAL', 'TOTAL H.', 'IMP. PEÓN', 'IMP. OFICIAL', 'TOTAL DÍA', 'DETALLE TRABAJADORES'];
+                const rowH = ws.addRow(headers);
+                rowH.height = 22;
+                for (let c = 1; c <= 8; c++) {
+                    const cell = rowH.getCell(c);
+                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.header.bg } };
+                    cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: C.header.fg } };
+                    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+                    cell.border = thinBorder;
+                }
+
+                // === FILAS DE DATOS ===
                 let totalPeon = 0, totalOficial = 0, totalImportePeon = 0, totalImporteOficial = 0;
                 const fechas = Object.keys(emp.dias).sort();
                 let rowAlt = false;
 
                 for (const fechaKey of fechas) {
                     const dia = emp.dias[fechaKey];
-                    let hPeon = 0, hOficial = 0;
-                    let impPeon = 0, impOficial = 0;
+                    let hPeon = 0, hOficial = 0, impPeon = 0, impOficial = 0;
                     let incompleto = false;
                     const detalles = [];
 
@@ -1122,94 +1136,198 @@
                     hOficial = Math.round(hOficial * 4) / 4;
                     const totalHDia = hPeon + hOficial;
                     const totalImpDia = impPeon + impOficial;
-
                     totalPeon += hPeon; totalOficial += hOficial;
                     totalImportePeon += impPeon; totalImporteOficial += impOficial;
 
-                    const bgRow = rowAlt ? COLOR_ROW_ALT : 'FFFFFF';
+                    const bgColor = rowAlt ? C.rowAlt.bg : 'FFFFFFFF';
                     const flagIncompleto = incompleto ? ' ⚠' : '';
 
-                    ws_data.push([
+                    const dataRow = ws.addRow([
                         formatDate(fechaKey + 'T12:00:00') + flagIncompleto,
-                        hPeon > 0 ? hPeon.toFixed(2) + 'h' : '-',
-                        hOficial > 0 ? hOficial.toFixed(2) + 'h' : '-',
-                        totalHDia > 0 ? totalHDia.toFixed(2) + 'h' : '-',
-                        impPeon > 0 ? impPeon.toFixed(2) + '€' : '-',
-                        impOficial > 0 ? impOficial.toFixed(2) + '€' : '-',
-                        totalImpDia > 0 ? totalImpDia.toFixed(2) + '€' : '-',
-                        detalles.join(' | ')
+                        hPeon > 0 ? hPeon : null,
+                        hOficial > 0 ? hOficial : null,
+                        totalHDia > 0 ? totalHDia : null,
+                        impPeon > 0 ? impPeon : null,
+                        impOficial > 0 ? impOficial : null,
+                        totalImpDia > 0 ? totalImpDia : null,
+                        detalles.join('  |  ')
                     ]);
-                    styles_map[r] = {};
-                    styles_map[r][0] = style(bgRow, '333333', true, true, false, 10, 'left');
-                    styles_map[r][1] = style(COLOR_PEON, '1A5C5C', true, true, false, 10, 'center');
-                    styles_map[r][2] = style(COLOR_OFICIAL, '0D4444', true, true, false, 10, 'center');
-                    styles_map[r][3] = style(bgRow, '333333', true, true, false, 10, 'center');
-                    styles_map[r][4] = style(COLOR_PEON, '1A5C5C', false, true, false, 10, 'center');
-                    styles_map[r][5] = style(COLOR_OFICIAL, '0D4444', false, true, false, 10, 'center');
-                    styles_map[r][6] = style(bgRow, '1A6B6B', true, true, false, 11, 'center');
-                    styles_map[r][7] = style('F9F9F9', '666666', false, true, true, 9, 'left');
-                    r++;
+                    dataRow.height = 18;
+
+                    // Estilo fecha
+                    const c1 = dataRow.getCell(1);
+                    c1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+                    c1.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF333333' } };
+                    c1.border = thinBorder;
+
+                    // Horas peón (col 2)
+                    const c2 = dataRow.getCell(2);
+                    c2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.peon.bg } };
+                    c2.font = { name: 'Calibri', size: 10, bold: true, color: { argb: C.peon.fg } };
+                    c2.alignment = { horizontal: 'center' }; c2.border = thinBorder;
+                    if (c2.value) c2.numFmt = '0.00"h"';
+
+                    // Horas oficial (col 3)
+                    const c3 = dataRow.getCell(3);
+                    c3.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.oficial.bg } };
+                    c3.font = { name: 'Calibri', size: 10, bold: true, color: { argb: C.oficial.fg } };
+                    c3.alignment = { horizontal: 'center' }; c3.border = thinBorder;
+                    if (c3.value) c3.numFmt = '0.00"h"';
+
+                    // Total horas (col 4)
+                    const c4 = dataRow.getCell(4);
+                    c4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+                    c4.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF333333' } };
+                    c4.alignment = { horizontal: 'center' }; c4.border = thinBorder;
+                    if (c4.value) c4.numFmt = '0.00"h"';
+
+                    // Importe peón (col 5)
+                    const c5 = dataRow.getCell(5);
+                    c5.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.peon.bg } };
+                    c5.font = { name: 'Calibri', size: 10, color: { argb: C.peon.fg } };
+                    c5.alignment = { horizontal: 'center' }; c5.border = thinBorder;
+                    if (c5.value) c5.numFmt = '#,##0.00"€"';
+
+                    // Importe oficial (col 6)
+                    const c6 = dataRow.getCell(6);
+                    c6.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.oficial.bg } };
+                    c6.font = { name: 'Calibri', size: 10, color: { argb: C.oficial.fg } };
+                    c6.alignment = { horizontal: 'center' }; c6.border = thinBorder;
+                    if (c6.value) c6.numFmt = '#,##0.00"€"';
+
+                    // Total día (col 7)
+                    const c7 = dataRow.getCell(7);
+                    c7.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+                    c7.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF1A6B6B' } };
+                    c7.alignment = { horizontal: 'center' }; c7.border = thinBorder;
+                    if (c7.value) c7.numFmt = '#,##0.00"€"';
+
+                    // Detalle (col 8)
+                    const c8 = dataRow.getCell(8);
+                    c8.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.detail.bg } };
+                    c8.font = { name: 'Calibri', size: 9, italic: true, color: { argb: C.detail.fg } };
+                    c8.alignment = { wrapText: true }; c8.border = thinBorder;
+
                     rowAlt = !rowAlt;
                 }
 
-                // FILA VACÍA
-                ws_data.push(['', '', '', '', '', '', '', '']);
-                r++;
+                // Fila vacía
+                ws.addRow([]);
 
-                // SUBTOTALES POR CATEGORÍA
-                ws_data.push(['SUBTOTAL PEONES', totalPeon.toFixed(2) + 'h', '', '', totalImportePeon.toFixed(2) + '€', '', '', '']);
-                merges.push({ s: { r, c: 2 }, e: { r, c: 3 } });
-                merges.push({ s: { r, c: 5 }, e: { r, c: 7 } });
-                styles_map[r] = {};
-                for (let c = 0; c < 8; c++) styles_map[r][c] = style(COLOR_PEON, '1A5C5C', true, true, false, 11, 'center');
-                styles_map[r][0] = style(COLOR_PEON, '1A5C5C', true, true, false, 11, 'left');
-                r++;
+                // === SUBTOTAL PEONES ===
+                const rowSP = ws.addRow(['SUBTOTAL PEONES', totalPeon, '', '', totalImportePeon, '', '', '']);
+                ws.mergeCells(rowSP.number, 3, rowSP.number, 4);
+                ws.mergeCells(rowSP.number, 6, rowSP.number, 8);
+                rowSP.height = 22;
+                for (let c = 1; c <= 8; c++) {
+                    const cell = rowSP.getCell(c);
+                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subtotal_peon.bg } };
+                    cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: C.subtotal_peon.fg } };
+                    cell.alignment = { horizontal: c === 1 ? 'left' : 'center', vertical: 'middle' };
+                    cell.border = thinBorder;
+                }
+                rowSP.getCell(2).numFmt = '0.00"h"';
+                rowSP.getCell(5).numFmt = '#,##0.00"€"';
 
-                ws_data.push(['SUBTOTAL OFICIALES', '', totalOficial.toFixed(2) + 'h', '', '', totalImporteOficial.toFixed(2) + '€', '', '']);
-                merges.push({ s: { r, c: 0 }, e: { r, c: 1 } });
-                merges.push({ s: { r, c: 3 }, e: { r, c: 4 } });
-                merges.push({ s: { r, c: 6 }, e: { r, c: 7 } });
-                styles_map[r] = {};
-                for (let c = 0; c < 8; c++) styles_map[r][c] = style(COLOR_OFICIAL, '0D4444', true, true, false, 11, 'center');
-                styles_map[r][0] = style(COLOR_OFICIAL, '0D4444', true, true, false, 11, 'left');
-                r++;
+                // === SUBTOTAL OFICIALES ===
+                const rowSO = ws.addRow(['SUBTOTAL OFICIALES', '', totalOficial, '', '', totalImporteOficial, '', '']);
+                ws.mergeCells(rowSO.number, 1, rowSO.number, 2);
+                ws.mergeCells(rowSO.number, 4, rowSO.number, 5);
+                ws.mergeCells(rowSO.number, 7, rowSO.number, 8);
+                rowSO.height = 22;
+                for (let c = 1; c <= 8; c++) {
+                    const cell = rowSO.getCell(c);
+                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subtotal_of.bg } };
+                    cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: C.subtotal_of.fg } };
+                    cell.alignment = { horizontal: c === 1 ? 'left' : 'center', vertical: 'middle' };
+                    cell.border = thinBorder;
+                }
+                rowSO.getCell(3).numFmt = '0.00"h"';
+                rowSO.getCell(6).numFmt = '#,##0.00"€"';
 
-                // TOTAL FINAL
+                // === TOTAL FINAL ===
                 const totalHoras = totalPeon + totalOficial;
                 const totalImporte = totalImportePeon + totalImporteOficial;
-                ws_data.push(['TOTAL A FACTURAR', '', (totalPeon + totalOficial).toFixed(2) + 'h', '', '', '', totalImporte.toFixed(2) + '€', '']);
-                merges.push({ s: { r, c: 0 }, e: { r, c: 1 } });
-                merges.push({ s: { r, c: 3 }, e: { r, c: 4 } });
-                merges.push({ s: { r, c: 5 }, e: { r, c: 7 } });
-                styles_map[r] = {};
-                for (let c = 0; c < 8; c++) styles_map[r][c] = style(COLOR_TOTAL_BG, COLOR_TOTAL_FG, true, true, false, 13, 'center');
-                styles_map[r][0] = style(COLOR_TOTAL_BG, COLOR_TOTAL_FG, true, true, false, 13, 'left');
-                r++;
+                const rowT = ws.addRow(['TOTAL A FACTURAR', '', totalHoras, '', '', '', totalImporte, '']);
+                ws.mergeCells(rowT.number, 1, rowT.number, 2);
+                ws.mergeCells(rowT.number, 4, rowT.number, 5);
+                ws.mergeCells(rowT.number, 7, rowT.number, 8);
+                rowT.height = 26;
+                for (let c = 1; c <= 8; c++) {
+                    const cell = rowT.getCell(c);
+                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.total.bg } };
+                    cell.font = { name: 'Calibri', size: 13, bold: true, color: { argb: C.total.fg } };
+                    cell.alignment = { horizontal: c === 1 ? 'left' : 'center', vertical: 'middle' };
+                    cell.border = thinBorder;
+                }
+                rowT.getCell(3).numFmt = '0.00"h"';
+                rowT.getCell(7).numFmt = '#,##0.00"€"';
 
-                // Crear hoja
-                const ws = XLSX.utils.aoa_to_sheet(ws_data);
-                ws['!merges'] = merges;
-                ws['!cols'] = [
-                    { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 14 },
-                    { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 60 }
-                ];
-                ws['!rows'] = [];
-                for (let i = 0; i < ws_data.length; i++) ws['!rows'].push({ hpt: i < 4 ? 22 : 18 });
+                // Fila vacía + desglose por trabajador
+                ws.addRow([]);
+                ws.addRow([]);
+                const rowDT = ws.addRow(['DESGLOSE POR TRABAJADOR','','','','','','','']);
+                ws.mergeCells(rowDT.number, 1, rowDT.number, 8);
+                rowDT.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.header.bg } };
+                rowDT.getCell(1).font = { name: 'Calibri', size: 12, bold: true, color: { argb: C.header.fg } };
+                rowDT.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+                rowDT.height = 24;
 
-                // Aplicar estilos celda a celda
-                for (const rowIdx in styles_map) {
-                    for (const colIdx in styles_map[rowIdx]) {
-                        const cellAddr = XLSX.utils.encode_cell({ r: parseInt(rowIdx), c: parseInt(colIdx) });
-                        if (!ws[cellAddr]) ws[cellAddr] = { t: 's', v: '' };
-                        ws[cellAddr].s = styles_map[rowIdx][colIdx];
+                const rowDH = ws.addRow(['TRABAJADOR', 'DNI', 'CATEGORÍA', 'DÍAS', 'TOTAL HORAS', '€/HORA', 'IMPORTE', '']);
+                ws.mergeCells(rowDH.number, 7, rowDH.number, 8);
+                rowDH.height = 20;
+                for (let c = 1; c <= 8; c++) {
+                    const cell = rowDH.getCell(c);
+                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.subtitle.bg } };
+                    cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: C.subtitle.fg } };
+                    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+                    cell.border = thinBorder;
+                }
+
+                // Calcular resumen por trabajador
+                const porTrabajador = {};
+                for (const fechaKey in emp.dias) {
+                    for (const trab of emp.dias[fechaKey].trabajadores) {
+                        const key = trab.dni || trab.nombre;
+                        if (!porTrabajador[key]) porTrabajador[key] = { nombre: trab.nombre, dni: trab.dni, categoria: trab.categoria, precioHora: trab.precioHora, dias: 0, horas: 0, importe: 0 };
+                        if (trab.horasTrabajadas !== null) {
+                            porTrabajador[key].dias++;
+                            porTrabajador[key].horas += trab.horasTrabajadas;
+                            porTrabajador[key].importe += trab.horasTrabajadas * trab.precioHora;
+                        }
                     }
                 }
 
-                const sheetName = emp.nombre.substring(0, 31).replace(/[\\/*?:\[\]]/g, '');
-                XLSX.utils.book_append_sheet(wb, ws, sheetName);
+                let altTrab = false;
+                for (const key in porTrabajador) {
+                    const t = porTrabajador[key];
+                    const bgT = altTrab ? C.rowAlt.bg : 'FFFFFFFF';
+                    const catBg = t.categoria === 'oficial' ? C.oficial.bg : C.peon.bg;
+                    const catFg = t.categoria === 'oficial' ? C.oficial.fg : C.peon.fg;
+                    const rowTr = ws.addRow([t.nombre, t.dni, t.categoria === 'oficial' ? 'Oficial' : 'Peón', t.dias, t.horas, t.precioHora, t.importe, '']);
+                    ws.mergeCells(rowTr.number, 7, rowTr.number, 8);
+                    rowTr.height = 18;
+                    for (let c = 1; c <= 8; c++) {
+                        const cell = rowTr.getCell(c);
+                        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: c === 3 ? catBg : bgT } };
+                        cell.font = { name: 'Calibri', size: 10, color: { argb: c === 3 ? catFg : 'FF333333' }, bold: c === 1 };
+                        cell.alignment = { horizontal: c <= 2 ? 'left' : 'center', vertical: 'middle' };
+                        cell.border = thinBorder;
+                    }
+                    rowTr.getCell(5).numFmt = '0.00"h"';
+                    rowTr.getCell(6).numFmt = '#,##0.00"€"';
+                    rowTr.getCell(7).numFmt = '#,##0.00"€"';
+                    altTrab = !altTrab;
+                }
             }
 
-            XLSX.writeFile(wb, `${obra.nombre}_proforma_${desde}_${hasta}.xlsx`);
+            // Descargar
+            const buffer = await wb.xlsx.writeBuffer();
+            const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `${obra.nombre}_proforma_${desde}_${hasta}.xlsx`; a.click();
+            URL.revokeObjectURL(url);
         }
 
         let eliminarPendiente = null;
